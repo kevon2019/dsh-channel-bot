@@ -16,7 +16,7 @@ deepseek-harness (dsh) 面板的**多渠道机器人**插件：把面板命令�
 dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ```
 
-> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot@1.0.0`
+> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot@1.0.1`
 > 安装后重启面板服务即可生效：`systemctl restart deepseek-harness.service`
 
 ## 配置
@@ -40,5 +40,5 @@ dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ## 开发与源码
 
 - 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
-- 版本：`1.0.0`
+- 版本：`1.0.1`
 - 许可：MIT
