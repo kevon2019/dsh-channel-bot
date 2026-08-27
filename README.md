@@ -66,6 +66,9 @@ dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 - **远程对话回复走 sessionProjections**：turn/end 事件带 `lastEndSeq`，订阅端用严格 `lastEndSeq === seq` 门控防回放，勿放宽成 `seq < lastEndSeq`（会重复推送上一轮回复）。
 - **公网回调需 nginx 豁免认证**：dsh 面板 nginx 若整 server 有 `auth_request /__auth_check`，须加 `location /api/channel-bot/webhook { auth_request off; proxy_pass http://backend; }`，否则外部回调（QQ/钉钉/飞书）被 401 拦截。
 - **重复消息去重**：插件对同一平台+chatId 的相同文本做 `lastSentToChat` 去重，避免流式重复。
+- **别在 profile 里手动 `pnpm add/up`**：可能破坏 `node_modules/@changfenhuang/dsh-genui` 软链（dsh 面板软链到 `@omdsh-dev/dsh-genui`）导致 UI 起不来；装/改插件走 `dsh plugin`。若动过 pnpm，检查该软链仍在。
+- **PROFILE 层补丁**：插件对面板的 cordis 补丁写在 PROFILE 的 `cordis.patch.yml`，勿改 node_modules 里的（重启还原）。
+- **私密信息**：token/密钥只填面板设置（settings.yaml），勿写进源码/命令。面板设置页打不开/转圈 = 缓存陈旧，硬刷新即可。
 
 底部每个配置块均有 **💾 保存** 与 **🧪 测试验证** 按钮；点标题旁 **▲ 收起 / ▼ 展开** 折叠对应区块；**总开关**的「**▲ 全部收起 / ▼ 全部展开**」一键折叠/展开所有渠道与功能区。
 
