@@ -15,8 +15,7 @@
 import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import z from "schemastery";
-import AiBot from "@wecom/aibot-node-sdk";
-import { createHmac, createPrivateKey, randomUUID, sign, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
@@ -38,8 +37,6 @@ function ilinkHeaders(token) {
   return {
     "content-type": "application/json",
     AuthorizationType: "ilink_bot_token",
-    "iLink-App-Id": "bot",
-    "iLink-App-ClientVersion": String((2 << 16) | (2 << 8) | 0),
     "X-WECHAT-UIN": Buffer.from(String((Math.random() * 0xffffffff) >>> 0)).toString("base64"),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
@@ -84,8 +81,6 @@ const schema = z.object({
     groupId: z.string().default(""),
     botId: z.string().default(""),   // 方案二 · OpenClaw 机器人模式（仅记录）
     secret: z.string().default(""),  // 方案二 · OpenClaw 机器人模式（仅记录）
-    appId: z.string().default(""),   // 方案二 · QQ开放平台 v2 (AppSecret→getAppAccessToken)
-    appSecret: z.string().default(""),
     notify: z.boolean().default(false),
   }),
   wechat: z.object({
@@ -635,21 +630,10 @@ async function sendFeishu(cfg, text) {
   });
   if (!res.ok) throw new Error(`feishu send HTTP ${res.status}`);
 }
-let wecomWs = null;      // 企微智能机器人 WebSocket 客户端（方案二）
-let wecomChatId = "";    // 最近收到企微消息的会话 userid，用于主动推送
 async function sendWecom(cfg, text) {
-  const wx = cfg.wecom || {};
-  // 方案二：企微智能机器人（botId+secret，Bot WebSocket）——可主动推送
-  if (wx.botId && wx.secret && wecomWs) {
-    const chatId = wx.touser || wecomChatId;
-    if (!chatId) { console.log("[wecom] sendWecom 无目标会话(chatId 空)"); return; }
-    console.log("[wecom] sendWecom 主动推送 chatId=", chatId);
-    try { await wecomWs.sendMessage(chatId, { msgtype: "markdown", markdown: { content: text } }); console.log("[wecom] sendMessage 已发"); return; }
-    catch (e) { console.warn("[wecom] sendMessage 失败:", e?.message || String(e)); return; }
-  }
   // 企业微信应用消息（发到指定成员个人）：corpid + corpsecret + agentid + touser
-  const cb = cfg.wecom || {};
-  if (cb.corpid && cb.corpsecret && cb.agentid && cb.touser) {
+  const wx = cfg.wecom || {};
+  if (wx.corpid && wx.corpsecret && wx.agentid && wx.touser) {
     const tk = await (await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(wx.corpid)}&corpsecret=${encodeURIComponent(wx.corpsecret)}`)).json();
     if (!tk.access_token) throw new Error(`wecom gettoken failed: ${tk.errcode} ${tk.errmsg}`);
     const body = { touser: wx.touser, agentid: Number(wx.agentid), msgtype: "text", text: { content: text }, safe: 0 };
@@ -668,58 +652,11 @@ async function sendWecom(cfg, text) {
   });
   if (!res.ok) throw new Error(`wecom send HTTP ${res.status}`);
 }
-// QQ 开放平台 v2 回调地址验证签名：Ed25519，seed=repeat(appSecret,32)，签名体 = event_ts + plain_token
-function qqCallbackSignature(appSecret, plainToken, eventTs) {
-  const bs = Buffer.from(String(appSecret), "utf8");
-  const seed = Buffer.alloc(32);
-  for (let i = 0; i < 32; i++) seed[i] = bs[i % bs.length];
-  const der = Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]);
-  const key = createPrivateKey({ key: der, format: "der", type: "pkcs8" });
-  const msg = Buffer.from(`${String(eventTs)}${String(plainToken)}`, "utf8");
-  return sign(null, msg, key).toString("hex");
-}
-const qqMsgIdMap = new Map(); // openid/group_openid → 最近收到的 msg_id（被动回复必带，等价微信 context_token）
-let qqTokCache = { token: "", exp: 0 };
-async function getQqToken(q) {
-  if (qqTokCache.token && Date.now() < qqTokCache.exp) return qqTokCache.token;
-  const res = await fetch("https://bots.qq.com/app/getAppAccessToken", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ appId: q.appId, clientSecret: q.appSecret }),
-    signal: AbortSignal.timeout(10000),
-  });
-  const d = await res.json().catch(() => ({}));
-  if (!d.access_token) throw new Error(`qq getAppAccessToken fail: ${d.code ?? ""} ${d.message ?? ""}`);
-  qqTokCache = { token: d.access_token, exp: Date.now() + ((Number(d.expires_in) || 7200) * 1000) - 60000 };
-  return qqTokCache.token;
-}
-async function sendQqV2(q, target, text) {
-  const token = await getQqToken(q);
-  const isGroup = target?.type === "group";
-  const id = String(target?.id ?? "");
-  if (!id) return;
-  const url = isGroup
-    ? `https://api.sgroup.qq.com/v2/groups/${encodeURIComponent(id)}/messages`
-    : `https://api.sgroup.qq.com/v2/users/${encodeURIComponent(id)}/messages`;
-  const payload = { content: text, msg_type: 0 };
-  const mid = qqMsgIdMap.get(id);
-  console.log("[qq] v2 send type=", target?.type, "id=", id, "mid=", mid ? "YES" : "NO", "map=", qqMsgIdMap.size);
-  if (mid) payload.msg_id = mid;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { authorization: `QQBot ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(`qq v2 send HTTP ${res.status}: ${t.slice(0, 140)}`); }
-}
 async function sendQq(cfg, target, text) {
-  const q = cfg?.qq || {};
-  if (q.appId && q.appSecret) return sendQqV2(q, target, text);
-  const base = q.onebotUrl;
+  const base = cfg.qq?.onebotUrl;
   if (!base) return;
   const headers = { "content-type": "application/json" };
-  if (q.accessToken) headers.authorization = `Bearer ${q.accessToken}`;
+  if (cfg.qq?.accessToken) headers.authorization = `Bearer ${cfg.qq.accessToken}`;
   const payload = target.type === "group"
     ? { group_id: Number(target.id), message: text }
     : { user_id: Number(target.id), message: text };
@@ -731,7 +668,6 @@ async function sendQq(cfg, target, text) {
   });
   if (!res.ok) throw new Error(`qq send HTTP ${res.status}`);
 }
-const wechatCtxMap = new Map(); // chatId → iLink context_token (inbound 每条更新，回复必须带回)
 async function sendWechat(cfg, target, text) {
   const token = cfg.wechat?.botToken;
   if (!token) return;
@@ -740,12 +676,10 @@ async function sendWechat(cfg, target, text) {
     headers: ilinkHeaders(token),
     body: JSON.stringify({
       msg: {
-        from_user_id: "",
         to_user_id: target.chatId,
-        client_id: randomUUID(),
         message_type: 2,
         message_state: 2,
-        ...(target.contextToken ? { context_token: target.contextToken } : {}),
+        context_token: target.contextToken ?? "",
         item_list: [{ type: 1, text_item: { text } }],
       },
     }),
@@ -1212,26 +1146,6 @@ function parseFeishu(body) {
   } catch { return null; }
 }
 function parseQq(body) {
-  /* QQ 开放平台 v2 事件（webhook）：单聊 / 群聊 @ */
-  if (body?.op === 0 && typeof body?.t === "string") {
-    if (body.t === "C2C_MESSAGE_CREATE") {
-      const m = body.d || {};
-      const text = String(m.content ?? "");
-      if (!text) return null;
-      const openid = m.author?.user_openid || m.author?.id || "";
-      return { text, from: openid, msgId: String(m.id ?? ""), target: { type: "private", id: openid } };
-    }
-    if (body.t === "GROUP_AT_MESSAGE_CREATE") {
-      const m = body.d || {};
-      const text = String(m.content ?? "").replace(/<@!?[\s\S]*?>/g, "").trim();
-      if (!text) return null;
-      const gid = m.group_openid || "";
-      const openid = m.author?.member_openid || m.author?.id || "";
-      return { text, from: openid, msgId: String(m.id ?? ""), target: { type: "group", id: gid } };
-    }
-    return null;
-  }
-  /* OneBot 事件上报 */
   if (body?.post_type !== "message") return null;
   const text = body.raw_message ?? body.message;
   if (typeof text !== "string") return null;
@@ -1341,11 +1255,11 @@ function apply(ctx, base) {
     for (const chunk of chunks) {
       try {
         if (binding.platform === "telegram") await sendTelegram(cfg, binding.chatId, chunk);
-        else if (binding.platform === "wechat") { console.log("[channel-bot] 微信 replyTurn 回发 chatId=", binding.chatId, "ctx=", wechatCtxMap.has(binding.chatId)); await sendWechat(cfg, { channel: "wechat", chatId: binding.chatId, contextToken: wechatCtxMap.get(binding.chatId) ?? "" }, chunk); }
+        else if (binding.platform === "wechat") await sendWechat(cfg, { channel: "wechat", chatId: binding.chatId }, chunk);
         else if (binding.platform === "qq") await sendQq(cfg, { type: binding.chatType === "group" ? "group" : "private", id: binding.chatId }, chunk);
         else if (binding.platform === "dingtalk") await sendDingTalk(cfg, chunk);
         else if (binding.platform === "feishu") await sendFeishu(cfg, chunk);
-        else if (binding.platform === "wecom") { console.log("[channel-bot] 企微 replyTurn 回发 chatId=", binding.chatId); await sendWecom(cfg, chunk); }
+        else if (binding.platform === "wecom") await sendWecom(cfg, chunk);
       } catch (error) {
         console.warn("[channel-bot] chat reply failed:", binding.platform, error instanceof Error ? error.message : String(error));
         return;
@@ -1361,7 +1275,6 @@ function apply(ctx, base) {
     /** Final answer of a turn, delivered as the reply itself. */
     replyTurn: async (binding, reason, body, tools, failure) => {
       const clean = typeof body === "string" ? body.trim() : "";
-      console.log("[bridge] replyTurn platform=", binding?.platform, "chatId=", binding?.chatId, "reason=", reason, "body=", clean.slice(0, 80));
       if (reason === "error") {
         /* Report the real failure: a chat user cannot open the panel. */
         const detail = clean || (typeof failure === "string" ? failure.trim() : "");
@@ -1472,7 +1385,6 @@ const chatServices = (platform, chatId, chatType) => ({
     lastSentToChat.delete(`${platform}:${chatId}`);
     const result = await dispatchTask({ ctx, map: chatMap, cfg, platform, chatId, text, chatType });
     if (!result.ok) return result.message;
-    console.log("[inbound] dispatch platform=", platform, "chatId=", chatId, "result=", JSON.stringify(result));
     return null; // the answer arrives through the projection subscriber
   };
 
@@ -1556,39 +1468,7 @@ const chatServices = (platform, chatId, chatType) => ({
     }, POLL_INTERVAL_MS);
   };
 
-  /* 方案二：企微智能机器人（botId+secret，WebSocket 长连接）——开始/停止 Bot 客户端。
-   * 收文本消息 → 调用面板命令工厂 handleCommand → 流式回复；同时记录会话 userid 供主动推送。 */
-  const startWecomBot = (cfg) => {
-    if (wecomWs) { try { wecomWs.disconnect(); } catch {} wecomWs = null; }
-    const wx = (cfg || {}).wecom || {};
-    if (wx.enabled && wx.botId && wx.secret) {
-      try {
-        wecomWs = new AiBot.WSClient({ botId: wx.botId, secret: wx.secret });
-        wecomWs.on("authenticated", () => console.log("[channel-bot] wecom Bot authenticated"));
-        wecomWs.on("message.text", (frame) => {
-          try {
-            const content = frame?.body?.text?.content;
-            console.log("[wecom] message.text 触发 content=", JSON.stringify(content), "| chat.enabled=", (current().chat || {}).enabled, "| bodyKeys=", Object.keys(frame?.body || {}));
-            if (typeof content !== "string") { console.log("[wecom] content 非字符串, 忽略"); return; }
-            const chatId = frame?.body?.from?.userid || frame?.body?.sender?.userid || frame?.body?.receiver?.userid || frame?.body?.userid || "";
-            if (chatId) wecomChatId = chatId;
-            const msgId = frame?.header?.msg_seq ?? frame?.body?.seq ?? Date.now();
-            (async () => {
-              let out = null;
-              try {
-                const reply = await handleInbound({ platform: "wecom", chatId, chatType: "private", text: content, msgId });
-                console.log("[wecom] handleInbound reply=", reply);
-                if (reply !== null && reply !== undefined) out = String(reply);
-              } catch (e) { console.warn("[wecom] handleInbound 异常:", e?.message || String(e)); out = "❌ " + (e?.message || String(e)); }
-              if (out) { console.log("[wecom] 回发:", String(out).slice(0, 60)); try { await wecomWs.replyStream(frame, String(Date.now()), out, true); } catch (e2) { console.warn("[wecom] replyStream 失败:", e2?.message || String(e2)); } }
-            })();
-          } catch (e) { console.warn("[wecom] 外层异常:", e?.message || String(e)); }
-        });
-        wecomWs.connect();
-      } catch (e) { console.warn("[channel-bot] wecom Bot start failed:", e?.message || String(e)); }
-    }
-  };
-  const applyConfig = (cfg) => { startPolling(cfg); startWechatPolling(cfg); startWecomBot(cfg); };
+  const applyConfig = (cfg) => { startPolling(cfg); startWechatPolling(cfg); };
 
   /* iLink (WeChat) long-polling: like Telegram getUpdates, cursor-based. */
   let wechatPolling = false;
@@ -1622,8 +1502,6 @@ const chatServices = (platform, chatId, chatType) => ({
               if (typeof text !== "string") continue;
               const allow = cur.wechat?.allowedUserIds ?? [];
               if (allow.length > 0 && !allow.includes(String(msg.from_user_id))) continue;
-              if (typeof msg.context_token === "string" && msg.context_token !== "") wechatCtxMap.set(String(msg.from_user_id), msg.context_token);
-              console.log("[wechat] msg from=", String(msg.from_user_id), "text=", JSON.stringify(text));
               const reply = await handleInbound({
                 platform: "wechat",
                 chatId: String(msg.from_user_id),
@@ -1804,15 +1682,6 @@ const chatServices = (platform, chatId, chatType) => ({
             const parse = PARSERS[channel];
             if (!parse) { sendJson(response, 404, { error: "unknown channel" }); return; }
             const body = await readBody(request);
-            // QQ 回调地址验证(op=13): 期望返回 {plain_token, signature}
-            if (channel === "qq" && body?.op === 13) {
-              const d = body.d || {};
-              const pt = String(d.plain_token ?? "");
-              const et = String(d.event_ts ?? "");
-              const signature = qqCallbackSignature(cfg.qq?.appSecret ?? "", pt, et);
-              sendJson(response, 200, { plain_token: pt, signature });
-              return;
-            }
             const message = parse(body);
             if (message === null) {
               // Feishu URL verification challenge
@@ -1822,9 +1691,6 @@ const chatServices = (platform, chatId, chatType) => ({
               }
               sendJson(response, 200, { ok: true }); // non-text events: ack
               return;
-            }
-            if (channel === "qq" && message?.msgId && typeof message.msgId === "string") {
-              qqMsgIdMap.set(String(message.target?.id ?? message.from), message.msgId);
             }
             const reply = await handleInbound({
               platform: channel,
