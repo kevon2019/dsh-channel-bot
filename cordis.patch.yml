@@ -1,0 +1,5 @@
+# dsh-channel-bot bundle patch: mount the host plugin under its package name,
+# resolved through the profile's node_modules (file: linked).
+- insert:
+    - id: channel-bot
+      name: dsh-channel-bot
