@@ -16,9 +16,9 @@ deepseek-harness (dsh) 面板的**多渠道机器人**插件：把面板命令�
 dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ```
 
-> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v1.0.6`
+> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v1.0.7`
 > （GitHub 依赖用 `#` 指定 tag/分支，**不是** npm 的 `@版本`）。安装后重启面板：`systemctl restart deepseek-harness.service`
-> 企业微信接入依赖 `@wecom/aibot-node-sdk`（v1.0.6 起已在插件依赖内，安装自动带上）。
+> 企业微信接入依赖 `@wecom/aibot-node-sdk`（v1.0.7 起已在插件依赖内，安装自动带上）。
 
 ## 配置
 
@@ -75,5 +75,5 @@ dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ## 开发与源码
 
 - 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
-- 版本：`1.0.6`
+- 版本：`1.0.7`
 - 许可：MIT
