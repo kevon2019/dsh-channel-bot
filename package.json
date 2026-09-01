@@ -1,6 +1,6 @@
 {
   "name": "dsh-channel-bot",
-  "version": "2.0.0-rc.2",
+  "version": "2.0.0-rc.3",
   "description": "Multi-channel bot (QQ/WeCom/DingTalk/Feishu/Telegram/WeChat): panel commands, event notifications, remote conversation and remote approval",
   "type": "module",
   "main": "lib/index.js",
