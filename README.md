@@ -1,79 +1,135 @@
 # dsh-channel-bot
 
-deepseek-harness (dsh) 面板的**多渠道机器人**插件：把面板命令、任务完成/告警通知、远程对话和远程审批接到多种即时通讯渠道。
+多渠道机器人插件（本地 file: 插件，非市场包）。把 DSH 面板接到 IM：
+既能用命令查面板状态、收主动通知，也能**直接在 IM 里和 agent 对话**、**远程审批高风险操作**。
 
-- 渠道：Telegram / 钉钉 / 飞书 / 企业微信 / QQ 开放平台 v2 / 微信（个人号 · 官方 iLink）
-- 命令：`/help` `/balance` `/status` `/plugins` `/version`
-- 通知渠道：agent 完成任务、出错、需要关注时主动推送（每渠道独立开关）
-- 远程对话：在 IM 里直接发普通消息即作为任务提交给 agent，回复原路返回
-- 远程审批：高风险工具调用先推审批卡片，IM 里 `/approve <id> yes|no` 放行/拒绝
+渠道：Telegram（getUpdates 长轮询）、微信（腾讯 iLink 官方机器人，扫码登录 + getupdates 长轮询）、
+钉钉 / 飞书 / 企业微信（机器人 webhook 出站；钉钉飞书还支持入站回调）、QQ（OneBot HTTP 双向）。
 
-## 安装（DSH 一键命令）
+设置入口：**设置 → 左侧导航底部「📣 多渠道机器人」**（需 ≥1440px 宽视口，窄窗口会折叠导航）。
 
-在 dsh 面板所在的机器上，进入任意 dsh profile 后执行：
+---
 
-```bash
-dsh plugin --profile web add github:kevon2019/dsh-channel-bot
+## 功能分层
+
+### 1. 命令（IM → 面板）
+| 命令 | 说明 |
+|---|---|
+| `/help` | 命令清单（按开关与功能启用状态动态生成） |
+| `/balance` | DeepSeek 账户余额 |
+| `/spending` | 全部会话花销：今日 / 本周 / 本月 / 今年（按 V4 官方峰谷价估算） |
+| `/status` | Harness 版本、运行时长、已启用渠道、插件数、远程对话/审批开关、待审批列表 |
+| `/plugins` | 已安装插件清单 |
+| `/version` | Harness 版本 |
+| `/new` | 为当前聊天新建（重置）绑定会话 |
+| `/end` | 解绑当前聊天的会话（面板里历史仍在） |
+| `/sessions` | 所有已绑定的聊天 → 会话映射 |
+| `/approve <id> yes\|no` | 远程批准 / 拒绝一次工具调用 |
+
+### 2. 主动通知（面板 → IM）
+- `send_notification` 工具：agent 可自己推消息。
+- 服务 `channelBotNotifier`：其他插件 `ctx.inject(["channelBotNotifier"])` 后调 `notify()`。
+- REST：`POST /api/channel-bot/notify` `{"text":"...","channel":"telegram"}`（channel 可省=全部）。
+- 事件通知：任务完成 / 出错 / 中止 / 阻塞 / Token 上限 / 等待审批 / 余额不足，
+  分级开关 + 关键词包含/排除（支持 `/正则/`）+ **静默时段**（如 `22:00-08:00`，时段内不推送但任务照常跑）。
+
+### 3. 远程对话（IM ⇄ agent）— 默认关闭
+开启后，**不带命令前缀的普通消息**就是给 agent 的任务：
+
+```
+聊天 (platform + chatId)  ──确定性哈希──▶  DSH session id
 ```
 
-> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v1.0.9`
-> （GitHub 依赖用 `#` 指定 tag/分支，**不是** npm 的 `@版本`）。安装后重启面板：`systemctl restart deepseek-harness.service`
-> 企业微信接入依赖 `@wecom/aibot-node-sdk`（v1.0.9 起已在插件依赖内，安装自动带上）。
+- 会话 id 由 `sha256(platform:chatId)` 生成，**重启不变**；映射另存
+  `~/.dsh/channel-bot-sessions.json`（tmp+rename 原子写、防抖）。
+- 取 agent 顺序：`agents.get()` → `agents.resume()` → `agents.create()`，
+  与面板输入框走同一套官方服务；agent 预设通过 `setup` 回调挂载（不挂载=会话没有官方工具）。
+- agent 正在跑时新消息走 `steer()`（打断/纠偏），空闲时走 `followup()`。
+- 回复原路发回**该聊天**（不是广播）；Markdown 降级为纯文本，超长按段落切分。
+- 流式：你在「活跃窗口」（默认 10 分钟）内发过消息时，多步任务的中间结果也会推送；
+  人不在就只推最终结果。
 
-## 配置
+### 4. 远程审批（高风险工具调用）— 默认关闭
+两个官方缝：
 
-打开 dsh 面板 → **设置 → 多渠道机器人**，按渠道填写：
+1. `tools/pre-execute` **风险闸**：按规则评级，≥阈值（默认 medium）才返回 `{kind:'ask'}`。
+   日常操作（`npm install`、`git pull`、`rm -rf node_modules`）判 low，永不打扰——
+   防的是「审批疲劳 → 用户干脆关掉审批」。
+2. `approval/request` **应答器**：推审批卡片到 IM，等 `/approve <id> yes|no`。
+   关闭时 `next()` 交回面板弹窗，面板行为不变。
 
-| 渠道 | 需要的信息 | 获取方式 |
-|---|---|---|
-| Telegram | Bot Token、允许的 Chat ID | @BotFather 创建机器人；`notifyChatId` 填你的用户 ID |
-| 钉钉 | 群机器人 Webhook、加签密钥 | 钉钉群机器人设置 |
-| 飞书 | 群机器人 Webhook、加签密钥 | 飞书群机器人设置 |
-| 企业微信（方案一）| 机器人 Webhook 或 4 项应用参数（corpid/corpsecret/agentid/touser）| 企微管理后台 |
-| 企业微信（方案二 · 真收发）| botId + secret | 企微「智能机器人」API 模式 · 长连接（本插件用 `@wecom/aibot-node-sdk` 直连收发）|
-| QQ（开放平台 v2）| appId + appSecret | QQ 开放平台管理端 → 开发基础设置 |
-| 微信（个人号）| 官方 iLink botToken | 面板内扫码登录（自动写入）|
+- 超时语义：`timeoutSec`（默认 300s）无人应答 → 推「任务已阻塞」提醒并继续等；
+  再过 `pendingMaxSec`（默认 3600s）→ **判定拒绝**。任何异常出口都是拒绝（fail closed）。
+- 卡片里的参数摘要**脱敏**：token / secret / key / password 等键名，以及
+  `sk-…` / `ghp_…` / `Bearer …` / JWT 形状的值一律替换为 `***`——卡片要经过第三方 IM 服务器。
+- 审计：`~/.dsh/channel-bot-approvals.log`，一行一条 JSON（谁、什么工具、参数摘要、结果、耗时）。
 
-### 企业微信方案二（真收发）
+内置风险规则（`lib/approvals.js`，顺序敏感，先匹配先生效）：
 
-`wecom.botId/secret` 配置后，插件用 `@wecom/aibot-node-sdk` 的 `WSClient` 长连接企微智能机器人：
+| 级别 | 例子 |
+|---|---|
+| high | `rm -rf /`、`rm -rf ~`、`rm -rf *`、`rm -rf /etc/*`、`mkfs`、`dd if=`、`curl … \| sh`、`chmod -R 777`、`sudo shutdown`、`DROP TABLE`、`systemctl stop` |
+| medium | `rm -rf <具体路径>`、`git push --force`、`git reset --hard`、`git clean -f`、`sudo`、`kill -9`、`docker rm/prune` |
+| low | `npm/pnpm/yarn/bun install`、`pip install`、`git pull/commit/...`、`rm -rf node_modules` |
 
-- **收**：`message.text` 事件 → 会话 ID 从 `frame.body.from.userid` 取
-- **发**：`replyStream` 回复命令；远程对话回复经投影链路；主动推送 `wsClient.sendMessage(chatId, {msgtype:'markdown', markdown:{content}})`
-- 注意：同一个企微 bot 只能一个客户端连接（channel-bot 与 OpenClaw 二选一占用）。
+自定义规则（设置里的多行文本框）：
 
-### QQ 开放平台 v2
+```
+high  terraform\s+destroy          # 默认作用于 shell 类工具
+high  * secrets/prod               # * = 所有工具
+medium tool:memory .               # tool:<名字> = 指定工具
+```
 
-`qq.appId/appSecret`（QQ 开放平台管理端获取），走官方 **webhook（公网 HTTPS 回调）+ OpenAPI**（WebSocket 事件推送官方已下线）：
+> ⚠️ 规则只匹配**参数 JSON**，且命令类规则只作用于 shell 类工具
+> （`bash`/`terminal`/`execute_bash`/…）。否则 `memory` 工具保存一条**引用了**
+> `rm -rf` 的笔记就会被判 high——危险字符串是数据，不是指令（实机踩过）。
 
-- **回调地址**：`https://your-domain.example.com/api/channel-bot/webhook/qq`（仅 80/443/8080/8443）。管理端配置该地址时会做 `op:13` 验证，插件返回 `{plain_token, signature}`（签名算法 **Ed25519**：seed=repeat(appSecret,32)，签名体=event_ts+plain_token）。
-- **订阅事件**：单聊 `C2C_MESSAGE_CREATE` + 群聊@ `GROUP_AT_MESSAGE_CREATE`（webhook 灰度需在管理端开通/联系反馈助手）。
-- **发送**：鉴权头 **`Authorization: QQBot {access_token}`**（不是 `Bot {appId}.{token}`，后者报 11243）；`POST /v2/users/{openid}/messages`（单聊）/ `/v2/groups/{group_openid}/messages`（群@）；**被动回复必须带 `msg_id`**（等价微信 context_token）。
-- **IP 白名单**：正式环境须把服务器公网 IP 加进管理端 IP 白名单；调试可用沙箱 `sandbox.api.sgroup.qq.com`（无 IP 白名单限制）。
-- 面板所在 nginx 需豁免该回调路径认证（`auth_request off`，见 README 末尾「注意事项」）。
+---
 
-### 微信（个人号 · 官方 iLink）
+## 安全须知
 
-`wechat.botToken` 为腾讯官方 iLink Bot Token，面板「微信」配置块内**扫码登录**自动写入（流程：`POST /api/channel-bot/wechat/login` 生成二维码 → 扫码 → `login/status` 确认即写回 token）。
+- **远程对话 = 把面板输入框开放给能给机器人发消息的人**。开启前务必配好各渠道的
+  「允许的 Chat ID / 用户 ID」白名单；留空表示不限制。
+- 钉钉/飞书入站回调支持加签校验（`secret`），不填则跳过校验（运维自己权衡）。
+- 企业微信入站需要 AES 解密，当前**只支持出站**。
+- 审批默认拒绝：推送失败、超时、会话中止全部按拒绝/不可用处理。
 
-- 会话 ID 用入站消息的 `msg.from_user_id`（`xxx@im.wechat`），`notifyUserId`/`allowedUserIds` 填你的微信会话 ID。
-- **回复必须带 `context_token`**（每条入站消息携带，回复时原样带回，否则不投递）。
-- `sendmessage` 需带：`from_user_id:""` + `client_id: <uuid>` + 头 `iLink-App-Id: bot`、`iLink-App-ClientVersion: 131584`，且 `context_token` 仅在有时才加（别传空串）。
-- **双向前提**：bot 身份（扫码微信号）与发消息方必须是**两个不同微信账号**——同一个号扫码做 bot 又自己发消息属于「自聊」，微信平台不投递。建议用常用号做 bot、另一个号做测试发送方。
+---
 
-## 注意事项
+## 文件结构
 
-- **远程对话回复走 sessionProjections**：turn/end 事件带 `lastEndSeq`，订阅端用严格 `lastEndSeq === seq` 门控防回放，勿放宽成 `seq < lastEndSeq`（会重复推送上一轮回复）。
-- **公网回调需 nginx 豁免认证**：dsh 面板 nginx 若整 server 有 `auth_request /__auth_check`，须加 `location /api/channel-bot/webhook { auth_request off; proxy_pass http://backend; }`，否则外部回调（QQ/钉钉/飞书）被 401 拦截。
-- **重复消息去重**：插件对同一平台+chatId 的相同文本做 `lastSentToChat` 去重，避免流式重复。
-- **别在 profile 里手动 `pnpm add/up`**：可能破坏 `node_modules/@changfenhuang/dsh-genui` 软链（dsh 面板软链到 `@omdsh-dev/dsh-genui`）导致 UI 起不来；装/改插件走 `dsh plugin`。若动过 pnpm，检查该软链仍在。
-- **PROFILE 层补丁**：插件对面板的 cordis 补丁写在 PROFILE 的 `cordis.patch.yml`，勿改 node_modules 里的（重启还原）。
-- **私密信息**：token/密钥只填面板设置（settings.yaml），勿写进源码/命令。面板设置页打不开/转圈 = 缓存陈旧，硬刷新即可。
+```
+lib/index.js       host 半边：设置 schema、命令、各渠道收发、通知、投影订阅、路由
+lib/render.js      Markdown→纯文本、长文切分、参数脱敏、静默时段
+lib/sessions.js    聊天⇄会话映射（确定性 id、原子持久化、去重、活跃判定、allowlist）
+lib/dispatch.js    派活：ensureAgent（get→resume→create）+ userMessage + steer/followup
+lib/approvals.js   风险评级 + 审批桥（pre-execute 闸 + approval/request 应答器）
+lib/client.js      浏览器半边：设置面板 UI + 侧边栏「📣 多渠道机器人」入口
+scripts/unit.test.mjs  单测（无网络、无 DSH 运行时）
+```
 
-底部每个配置块均有 **💾 保存** 与 **🧪 测试验证** 按钮；点标题旁 **▲ 收起 / ▼ 展开** 折叠对应区块；**总开关**的「**▲ 全部收起 / ▼ 全部展开**」一键折叠/展开所有渠道与功能区。
+测试：
 
-## 开发与源码
+```bash
+cd ~/.dsh/profiles/web/dsh-channel-bot && node --test scripts/unit.test.mjs
+```
 
-- 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
-- 版本：`1.0.9`
-- 许可：MIT
+---
+
+## 关键实现坑（都踩过）
+
+1. **`{{model}}` 无值**：`agents.create`/`resume` 不传 `agentOptions` → 回合组装失败
+   `prompt variable "{{model}}" has no value ... (section "deployment:persona")`。
+   新建取 `agentDefaultModel.currentSelection()`（**不是** `get()`）；
+   恢复优先读该会话自己最后一条 `request/header` 的 config。
+2. **`agentPreset: ""`**：空字符串不是合法预设 id，`presets.resolve("")` 抛
+   `preset "" not found`；要传 `undefined` 让服务给默认值。
+3. **多步回合会重复回复**：一个 turn 每个 step 都发一条 `assistant/message`，
+   把它们拼起来会得到「收到收到收到」。最终答复取**最后一条**（`lastMsg`），
+   流式只推「已经不是最新的那条」（`prevMsg`），另加一层「与上次发送内容相同则跳过」的去重。
+4. **`permissionRules/decision` 让 resume 失败**：`dsh-session` 的 `append()` 丢掉了
+   `ignorable: true` 选项，事件写盘没带标记，之后 resume 整个日志被拒绝
+   （`unknown to this harness and not marked ignorable`）。修在
+   `/root/.dsh/patches/dsh-client-patches.sh` 的 `patch_session_ignorable_append`。
+5. **子 slot 必须 `ctx.slots.inject`**：`sidebar.footer.action` 是 ui-sidebar 声明的子 slot，
+   裸 `register` 会与声明竞态，直接打崩整个 client boot。

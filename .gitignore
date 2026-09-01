@@ -1,6 +1,7 @@
 node_modules/
-*.log
 *.bak
+*.bak.*
 .bak-*/
+*.log
+logs/
 .DS_Store
-dist/

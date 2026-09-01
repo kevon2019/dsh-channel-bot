@@ -1,6 +1,6 @@
 {
   "name": "dsh-channel-bot",
-  "version": "1.0.9",
+  "version": "2.0.0-alpha.1",
   "description": "Multi-channel bot (QQ/WeCom/DingTalk/Feishu/Telegram/WeChat): panel commands, event notifications, remote conversation and remote approval",
   "type": "module",
   "main": "lib/index.js",
@@ -27,9 +27,5 @@
         "@deepseek-ai/dsh-client-connection"
       ]
     }
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/kevon2019/dsh-channel-bot.git"
   }
 }

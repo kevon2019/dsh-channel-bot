@@ -80,8 +80,8 @@ test("argsSummary 按 key 脱敏", () => {
 
 test("argsSummary 按值模式脱敏（sk- / ghp_ / Bearer / JWT）", () => {
   for (const secret of [
-    "sk-TEST-PLACEHOLDER",
-    "ghp_TEST-PLACEHOLDER",
+    "sk-abcdefghijklmnop",
+    "ghp_ABCDEFGHIJKLMNOPQRST",
     "Bearer abc.def-ghi_jkl",
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
   ]) {
