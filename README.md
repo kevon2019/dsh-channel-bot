@@ -16,9 +16,9 @@ deepseek-harness (dsh) 面板的**多渠道机器人**插件：把面板命令�
 dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ```
 
-> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.0.0-rc.5`
+> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.0.0-rc.6`
 > （GitHub 依赖用 `#` 指定 tag/分支，**不是** npm 的 `@版本`）。安装后重启面板：`systemctl restart deepseek-harness.service`
-> 企业微信接入依赖 `@wecom/aibot-node-sdk`（v2.0.0-rc.5 起已在插件依赖内，安装自动带上）。
+> 企业微信接入依赖 `@wecom/aibot-node-sdk`（v2.0.0-rc.6 起已在插件依赖内，安装自动带上）。
 
 ## 配置
 
@@ -61,6 +61,29 @@ dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 - `sendmessage` 需带：`from_user_id:""` + `client_id: <uuid>` + 头 `iLink-App-Id: bot`、`iLink-App-ClientVersion: 131584`，且 `context_token` 仅在有时才加（别传空串）。
 - **双向前提**：bot 身份（扫码微信号）与发消息方必须是**两个不同微信账号**——同一个号扫码做 bot 又自己发消息属于「自聊」，微信平台不投递。建议用常用号做 bot、另一个号做测试发送方。
 
+## 域名 / 反向代理部署：设置一直「加载中…」？（v2.0.0-rc.6+）
+
+**现象**：用**域名**（或任何反向代理地址）打开面板时，「多渠道机器人」设置页永远停在「多渠道机器人设置加载中…」，
+同一部署下核心自带的 Models 页会直接报 `Loading the provider directory failed: settings are unavailable in this browser`。
+
+**根因在核心，不在本插件**（dsh ≥ 0.1.5，实测 0.1.5-rc.1）：核心客户端把「设置读写」判定为**仅本机托管（loopback）可用** ——
+`@deepseek-ai/dsh-client-connection` 的 `isLoopback` 只看浏览器地址栏是不是 `127.0.0.1` / `localhost`
+（核心自己的 `dsh-client-ui-settings-general` 也 gate 在 `ctx.remote.$host.isLoopback` 上）。
+反代部署时地址栏是域名 → `isLoopback === false` → 核心把 settings 静默降级为 unavailable →
+所有基于 `settings.section` 的插件（含本插件、也含核心自己的设置页）都拿不到设置作用域。
+**所以换插件版本解决不了，装哪个版本都一样。**
+
+**两种解法（任选其一）**：
+1. **本机访问面板**：`http://127.0.0.1:3080/?token=<启动令牌>`（启动令牌见 journal：`journalctl -u deepseek-harness -n 50 | grep token=`）。
+2. **域名部署放行**（给**核心**打一处补丁，不是改本插件）：在
+   `node_modules/@deepseek-ai/dsh-client-connection/lib/client.js` 的 `isLoopback:` 那一行追加
+   `|| (pageLocation !== void 0 && pageLocation.hostname === "<你的域名>")`。
+   注意 `pnpm install` / 插件更新会还原该行，建议写成幂等补丁脚本挂在服务启动前（systemd `ExecStartPre`）。
+
+**rc.6 的兜底**：即便以上两件都没做，插件也不会再无限转圈 —— 8 秒超时后改为显示**诊断面板**
+（当前地址 / 核心判定 / 根因 / 两条修复路径 / 「重新绑定」/「复制诊断信息」），便于自助排查或直接
+把诊断文本贴进 issue。**机器人后台运行与渠道收发不受影响**，只是面板里的设置读写不可用。
+
 ## 注意事项
 
 - **远程对话回复走 sessionProjections**：turn/end 事件带 `lastEndSeq`，订阅端用严格 `lastEndSeq === seq` 门控防回放，勿放宽成 `seq < lastEndSeq`（会重复推送上一轮回复）。
@@ -68,12 +91,14 @@ dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 - **重复消息去重**：插件对同一平台+chatId 的相同文本做 `lastSentToChat` 去重，避免流式重复。
 - **别在 profile 里手动 `pnpm add/up`**：可能破坏 `node_modules/@changfenhuang/dsh-genui` 软链（dsh 面板软链到 `@omdsh-dev/dsh-genui`）导致 UI 起不来；装/改插件走 `dsh plugin`。若动过 pnpm，检查该软链仍在。
 - **PROFILE 层补丁**：插件对面板的 cordis 补丁写在 PROFILE 的 `cordis.patch.yml`，勿改 node_modules 里的（重启还原）。
-- **私密信息**：token/密钥只填面板设置（settings.yaml），勿写进源码/命令。面板设置页打不开/转圈 = 缓存陈旧，硬刷新即可。
+- **私密信息**：token/密钥只填面板设置（settings.yaml），勿写进源码/命令。面板设置页打不开/转圈分两种：
+  ① **用域名/反代访问**时转圈 = 核心 loopback 判定导致 settings 不可用（见上文「域名 / 反向代理部署」一节，
+  与插件版本无关）；② **本机访问**时转圈 = 缓存陈旧，硬刷新（Ctrl/Cmd+Shift+R）即可。
 
 底部每个配置块均有 **💾 保存** 与 **🧪 测试验证** 按钮；点标题旁 **▲ 收起 / ▼ 展开** 折叠对应区块；**总开关**的「**▲ 全部收起 / ▼ 全部展开**」一键折叠/展开所有渠道与功能区。
 
 ## 开发与源码
 
 - 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
-- 版本：`2.0.0-rc.5`
+- 版本：`2.0.0-rc.6`
 - 许可：MIT
