@@ -16,11 +16,34 @@ deepseek-harness (dsh) 面板的**多渠道机器人**插件：把面板命令�
 dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ```
 
-> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.1.0`
+> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.2.0`
 > （GitHub 依赖用 `#` 指定 tag/分支，**不是** npm 的 `@版本`）。安装后重启面板：`systemctl restart deepseek-harness.service`
 > 企业微信接入依赖 `@wecom/aibot-node-sdk`（v2.0.0-rc.7 起已在插件依赖内，安装自动带上）。
 
-## 四渠道双向自检（设置 → 多渠道机器人 → 诊断）
+## 全渠道双向自检（设置 → 多渠道机器人 → 诊断）
+
+覆盖**六个渠道**：Telegram / 钉钉 / 飞书 / 企业微信 / QQ / 微信。每个渠道一行，另有
+「参与自检」开关（分渠道设定，可把某渠道移出表）与每行独立的「自检」按钮；
+顶部「全部自检」会依次给所有已启用且参与的渠道发一条测试消息。
+
+### 钉钉 / 飞书：方案一 vs 方案二
+
+| | 方案一 | 方案二（v2.2.0 起默认） |
+|---|---|---|
+| 钉钉 | 群机器人 Webhook + 加签（`scheme:"1"`）| **企业内部应用机器人**：`AppKey`+`AppSecret`+`robotCode`，单聊 `oToMessages` / 群聊 `groupMessages`（`scheme:"2"`）|
+| 飞书 | 群机器人 Webhook + 加签（`scheme:"1"`）| **自建应用**：`App ID`+`App Secret`，`im/v1/messages` 主动发（`scheme:"2"`）|
+
+方案二额外字段：钉钉 `robotCode` / `callbackToken` / `callbackAesKey`、飞书 `verificationToken` / `encryptKey`，
+以及两者共用的「目标ID」（钉钉：userId 或 openConversationId；飞书：open_id / chat_id / email / user_id）。
+切换方式（面板改字段即可，或用接口）：
+
+```bash
+curl -s -X POST -H "Cookie: <面板 cookie>" -H 'content-type: application/json' \
+  -d '{"patch":{"dingtalk":{"scheme":"2"},"feishu":{"scheme":"2"}}}' \
+  http://127.0.0.1:3080/api/channel-bot/config
+```
+
+### 原「四渠道双向自检」说明
 
 渠道的轮询与长连接是**静默进程**：正常时不产生日志，出问题也常常什么都不打印
 （v2.0.0 就踩过「微信长轮询被瞬时配置快照打断后永久退出、日志里一片安静」的坑）。

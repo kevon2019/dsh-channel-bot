@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.2.0 (2026-09-18) — 全渠道双向自检 + 钉钉/飞书「方案二」
+
+- **双向自检扩展到全部 6 个渠道**：Telegram / **钉钉** / **飞书** / 企业微信 / QQ / 微信，
+  每个渠道一行，显示「接收通道类型 + 状态」（轮询中 / 长连接 / 回调就绪 / 未启用）、
+  最近一次入站（时间·来源·内容）、最近一次出站（成功次数或错误原文）、结论与原因，
+  并在渠道名后标出当前是**方案一还是方案二**。
+- **分渠道设定**：每个渠道一个「参与自检」开关（默认开）——点一下即可把某渠道移出/纳入自检表
+  （设置持久化到 `selfCheck` 字段）；顶部有「**全部自检（N 个已启用渠道）**」，
+  每行还有独立的「**自检**」按钮，单个渠道诊断后就地显示结果（✅ 已发送 / ❌ 原因），不用翻日志。
+- **钉钉支持「方案二」：企业内部应用机器人**（`scheme: "2"`，默认）：
+  `AppKey + AppSecret + robotCode` 换 accessToken（带缓存），单聊走
+  `/v1.0/robot/oToMessages/batchSend`、群聊走 `/v1.0/robot/groupMessages/send`；
+  入站回调支持 `appSecret` 签名校验（`timestamp`/`sign` 头）+ 解析 `conversationId/msgId/senderStaffId`。
+  方案一（群机器人 Webhook + 加签）仍在 `scheme: "1"` 下保留。
+- **飞书支持「方案二」：自建应用**（`scheme: "2"`，默认）：
+  `App ID + App Secret` 换 `tenant_access_token`，走 `/open-apis/im/v1/messages`
+  （receive_id_type 支持 open_id / chat_id / email / user_id / union_id）；
+  事件订阅支持 **Verification Token 校验**与 **Encrypt Key AES-256-CBC 解密**（`encrypt` 字段）。
+  方案一（群机器人 Webhook + 加签）仍在 `scheme: "1"` 下保留。
+- **新增插件自写配置接口** `POST /api/channel-bot/config`：把 patch 合并进 `channel-bot`
+  设置命名空间（如 `{"patch":{"dingtalk":{"scheme":"2"},"feishu":{"scheme":"2"}}}`），
+  用于方案切换/批量设置自检开关，免手改 settings.yaml。
+- 通知与自检覆盖新渠道：`planNotifyTargets` 现在也支持钉钉/飞书方案二（凭据+目标齐全才进列表，
+  否则在「未进通知列表的原因」里说明缺什么）。
+- 单测 54 → 57 项（六渠道清单/分渠道开关/健康视图字段/钉钉飞书方案二通知目标）。
+
 ## 2.1.1 (2026-09-18) — 双向自检表可读性修复
 
 - **「接收链路待验证」显式化**：入站还没收到过消息时，结论列不再只写「✅ 正常」，而是

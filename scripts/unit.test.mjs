@@ -109,6 +109,7 @@ import {
   isQqOpenidLike, planNotifyTargets, notifySkipReasons, healthyView,
   hrec, markPoll, markInbound, markOutbound, markSkip,
   freshQqMsgId, rememberQqMsgId, QQ_MSG_ID_MAX_AGE_MS,
+  CHANNELS, CHANNEL_LABELS, selfCheckEnabled, channelHealthView,
 } from "../lib/health.js";
 
 test("isQqOpenidLike：openid 认，纯数字群号不认", () => {
@@ -180,6 +181,57 @@ test("rememberQqMsgId 记录 msg_id 与其时间戳", () => {
   }, "B237", now + 1000), "MSG2");
 });
 
+test("六渠道清单与分渠道自检开关（selfCheck 默认开，可单独关）", () => {
+  assert.deepEqual(CHANNELS, ["telegram", "dingtalk", "feishu", "wecom", "qq", "wechat"]);
+  assert.equal(CHANNEL_LABELS.feishu, "飞书");
+  const cfg = { telegram: {}, dingtalk: { selfCheck: false }, feishu: {}, wecom: {}, qq: { selfCheck: false }, wechat: {} };
+  assert.equal(selfCheckEnabled(cfg, "feishu"), true, "默认参与");
+  assert.equal(selfCheckEnabled(cfg, "dingtalk"), false, "显式关掉就不参与");
+  assert.equal(selfCheckEnabled(cfg, "qq"), false);
+  assert.equal(selfCheckEnabled(cfg, "dingtalk"), false);
+});
+
+test("channelHealthView：六个渠道全覆盖，且带上 label/方案/接收通道类型", () => {
+  const cfg = { enabled: true, telegram: { enabled: true }, dingtalk: { enabled: true, scheme: "2" },
+    feishu: { enabled: false, scheme: "2" }, wecom: { enabled: true }, qq: { enabled: true }, wechat: { enabled: true } };
+  const v = channelHealthView(cfg, {
+    telegram: { tokenSet: true, pollerRunning: true },
+    dingtalk: { tokenSet: false, pollerRunning: true },
+    feishu: { tokenSet: false, pollerRunning: true },
+    wecom: { tokenSet: true, pollerRunning: true },
+    qq: { tokenSet: true, pollerRunning: true },
+    wechat: { tokenSet: true, pollerRunning: true },
+  });
+  assert.deepEqual(Object.keys(v), CHANNELS, "六个渠道一个都不能少");
+  assert.equal(v.dingtalk.label, "钉钉");
+  assert.equal(v.feishu.label, "飞书");
+  assert.equal(v.dingtalk.scheme, "2", "方案号要透出，面板上能看到是方案二");
+  assert.equal(v.telegram.receiverKind, "poller");
+  assert.equal(v.wecom.receiverKind, "socket");
+  assert.equal(v.feishu.receiverKind, "webhook", "飞书/钉钉入站是平台回调");
+  assert.equal(v.feishu.enabled, false);
+  assert.ok(v.dingtalk.problems.join(" ").indexOf("凭据未配置完整") >= 0, JSON.stringify(v.dingtalk.problems));
+  /* 接收通道类型：轮询 / 长连接 / 回调 三种都识别 */
+  assert.equal(v.qq.receiverKind, "webhook");
+  assert.equal(v.wechat.receiverKind, "poller");
+});
+
+test("planNotifyTargets：钉钉/飞书方案二也要能进通知列表（方案一仍支持）", () => {
+  const base = { enabled: true };
+  const dt2 = planNotifyTargets({ ...base, dingtalk: { enabled: true, notify: true, scheme: "2", appKey: "k", appSecret: "s", robotCode: "r", testTargetId: "user1", testTargetType: "user" } }, {});
+  assert.deepEqual(dt2.map((x) => [x.channel, x.target.id, x.target.type]), [["dingtalk", "user1", "user"]]);
+  const dt1 = planNotifyTargets({ ...base, dingtalk: { enabled: true, notify: true, scheme: "1", outWebhook: "https://x" } }, {});
+  assert.deepEqual(dt1.map((x) => x.channel), ["dingtalk"]);
+  const dtNoTarget = planNotifyTargets({ ...base, dingtalk: { enabled: true, notify: true, scheme: "2", appKey: "k", appSecret: "s", robotCode: "r" } }, {});
+  assert.deepEqual(dtNoTarget, [], "方案二没有通知目标 → 不该进列表");
+  const fs2 = planNotifyTargets({ ...base, feishu: { enabled: true, notify: true, scheme: "2", appId: "cli_x", appSecret: "s", testTargetId: "ou_1", testTargetType: "open_id" } }, {});
+  assert.deepEqual(fs2.map((x) => [x.channel, x.target.id, x.target.type]), [["feishu", "ou_1", "open_id"]]);
+  const reasons = notifySkipReasons({ ...base, dingtalk: { enabled: true, notify: true, scheme: "2" }, feishu: { enabled: true, notify: true, scheme: "2" } }, {});
+  assert.equal(reasons.length, 2);
+  assert.match(reasons.join(" "), /AppKey/);
+  assert.match(reasons.join(" "), /App ID/);
+});
+
 test("planNotifyTargets：telegram 走 notifyChatId / 首个 allowedChatIds", () => {
   assert.deepEqual(
     planNotifyTargets({ enabled: true, telegram: { enabled: true, notify: true, notifyChatId: "5233181199" } }, {}).map((t) => t.chatId),
@@ -229,6 +281,20 @@ test("healthyView：轮询+入站+出站都正常 → ok，且能读出最近入
   assert.equal(v.inbound.lastFrom, "5233181199");
   assert.equal(v.outbound.lastOk, true);
   assert.ok(v.poller.polls >= 1);
+});
+
+test("healthyView：偶发轮询失败（如长轮询超时后的瞬时 409）不算故障，连续 3 次才算", () => {
+  const ch = "telegram";
+  markInbound(ch, "1", "x"); markOutbound(ch, true);
+  markPoll(ch, false, "HTTP 409");
+  const once = healthyView(ch, {}, { enabled: true, tokenSet: true, pollerRunning: true });
+  assert.equal(once.ok, true, "单次失败不该一票否决");
+  assert.match(once.notes.join(" "), /偶发轮询失败/);
+  markPoll(ch, false, "HTTP 409");
+  markPoll(ch, false, "HTTP 409");
+  const thrice = healthyView(ch, {}, { enabled: true, tokenSet: true, pollerRunning: true });
+  assert.equal(thrice.ok, false);
+  assert.match(thrice.problems.join(" "), /连续失败 3 次/);
 });
 
 test("healthyView：出站最近一次失败要显式暴露（不静默）", () => {
