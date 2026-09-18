@@ -91,6 +91,15 @@ test("argsSummary 按值模式脱敏（sk- / ghp_ / Bearer / JWT）", () => {
   }
 });
 
+test("argsSummary 脱敏判定必须无状态（回归：带 /g 的 .test() 会漏判）", () => {
+  const secret = "ghp_" + "A".repeat(36);
+  for (let i = 0; i < 12; i++) {
+    const s = argsSummary({ cmd: `git push https://x:${secret}@github.com/a/b.git` });
+    assert.ok(!s.includes(secret), `第 ${i + 1} 次未脱敏: ${s}`);
+    assert.match(s, /\*\*\*/);
+  }
+});
+
 test("argsSummary 接受 JSON 字符串与坏 JSON", () => {
   assert.match(argsSummary('{"a":1}'), /a=1/);
   assert.equal(argsSummary("not json"), "not json");

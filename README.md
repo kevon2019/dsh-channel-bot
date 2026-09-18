@@ -16,9 +16,20 @@ deepseek-harness (dsh) 面板的**多渠道机器人**插件：把面板命令�
 dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ```
 
-> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.0.0-rc.7`
+> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.0.0`
 > （GitHub 依赖用 `#` 指定 tag/分支，**不是** npm 的 `@版本`）。安装后重启面板：`systemctl restart deepseek-harness.service`
 > 企业微信接入依赖 `@wecom/aibot-node-sdk`（v2.0.0-rc.7 起已在插件依赖内，安装自动带上）。
+
+## 兼容性
+
+| dsh 核心 | 状态 |
+|---|---|
+| `0.1.6-alpha.1` | ✅ 已实测（2026-09-18）：面板启动、设置分区全量渲染、侧边栏入口、`/api/channel-bot/status`、企微长连接鉴权；浏览器控制台 0 报错 |
+| `0.1.5-rc.1` | ✅ 已实测（2026-09-10）：`settings.section` 分区注册与设置读写 |
+| `>= 0.1.2-alpha.1` | ✅ 声明支持（`minCore`） |
+
+在面板「设置 → 多渠道机器人 → 诊断 → 测试状态」里可以看到当前核心版本与本插件版本；
+IM 里发 `/version` 也会回显 `DeepSeek Harness <核心版本>（多渠道机器人 v2.0.0 · 已验证 0.1.6-alpha.1）`。
 
 ## 配置
 
@@ -100,5 +111,5 @@ dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ## 开发与源码
 
 - 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
-- 版本：`2.0.0-rc.7`
+- 版本：`2.0.0`
 - 许可：MIT
