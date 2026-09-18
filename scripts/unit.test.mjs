@@ -7,6 +7,7 @@ import { evaluateRisk, riskAtLeast, parseRiskRules, defaultRiskRules, ApprovalBr
 import { ChatSessionMap, sessionIdFor, chatKey } from "../lib/sessions.js";
 import { userMessage } from "../lib/dispatch.js";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -100,7 +101,10 @@ test("argsSummary 脱敏判定必须无状态（回归：带 /g 的 .test() 会�
   }
 });
 
-/* ---------- v2.1.0：渠道健康 / 通知目标解析（host 侧纯函数）---------- */
+/* ---------- v2.1.0：渠道健康 / 通知目标解析（host 侧纯函数）----------
+ * 注意：health.js 会落盘状态，单测必须指向临时文件，否则会把线上
+ * ~/.dsh/channel-bot-state.json（含微信 context_token / QQ 最近入站）覆盖掉。 */
+process.env.CHANNEL_BOT_STATE_FILE = join(tmpdir(), "channel-bot-state-test-" + process.pid + ".json");
 import {
   isQqOpenidLike, planNotifyTargets, notifySkipReasons, healthyView,
   hrec, markPoll, markInbound, markOutbound, markSkip,
@@ -154,6 +158,17 @@ test("QQ msg_id 只在新窗口内使用（过期带着它推 → 400 msg_id无�
   assert.equal(freshQqMsgId(st, "B237", now, 60 * 1000), "", "可自定义窗口");
 });
 
+test("单测不会写到线上状态文件（CHANNEL_BOT_STATE_FILE 生效）", () => {
+  rememberQqMsgId("TESTONLY", "X1", Date.now());
+  return new Promise((r) => setTimeout(() => {
+    const p = process.env.CHANNEL_BOT_STATE_FILE;
+    assert.ok(p && p.indexOf("channel-bot-state-test-") > 0, p);
+    assert.ok(readFileSync(p, "utf8").indexOf("TESTONLY") >= 0, "应写入临时文件");
+    assert.ok(readFileSync("/root/.dsh/channel-bot-state.json", "utf8").indexOf("TESTONLY") < 0, "线上文件不能被污染");
+    r();
+  }, 1200));
+});
+
 test("rememberQqMsgId 记录 msg_id 与其时间戳", () => {
   const st = { wechatContexts: {}, qqInbound: null, qqMsgIds: {}, qqMsgIdAt: {} };
   const now = 1_700_000_000_000;
@@ -197,7 +212,7 @@ test("healthyView：未启用 / 凭据缺失 / 接收通道未运行 都给出�
   assert.match(dead.problems.join(" "), /接收通道未在运行/);
   const idle = healthyView("feishu", {}, { enabled: true, tokenSet: true, pollerRunning: true });
   assert.equal(idle.ok, true, "空闲（还没收到过入站）不应判为故障");
-  assert.match(idle.notes.join(" "), /尚未收到过入站消息/);
+  assert.match(idle.notes.join(" "), /接收链路待验证/);
 });
 
 test("healthyView：轮询+入站+出站都正常 → ok，且能读出最近入站/出站", () => {
