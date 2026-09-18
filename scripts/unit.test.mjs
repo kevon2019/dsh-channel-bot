@@ -100,6 +100,145 @@ test("argsSummary 脱敏判定必须无状态（回归：带 /g 的 .test() 会�
   }
 });
 
+/* ---------- v2.1.0：渠道健康 / 通知目标解析（host 侧纯函数）---------- */
+import {
+  isQqOpenidLike, planNotifyTargets, notifySkipReasons, healthyView,
+  hrec, markPoll, markInbound, markOutbound, markSkip,
+  freshQqMsgId, rememberQqMsgId, QQ_MSG_ID_MAX_AGE_MS,
+} from "../lib/health.js";
+
+test("isQqOpenidLike：openid 认，纯数字群号不认", () => {
+  assert.equal(isQqOpenidLike("B237F05151A11D57DAB2743EAC38D040"), true);
+  assert.equal(isQqOpenidLike("1903461428"), false, "纯数字是群号/QQ号，QQ 开放平台 v2 会 400");
+  assert.equal(isQqOpenidLike("abc"), false);
+  assert.equal(isQqOpenidLike(""), false);
+  assert.equal(isQqOpenidLike(null), false);
+});
+
+test("planNotifyTargets：企微方案二（botId+secret）必须能进通知列表", () => {
+  const cfg = { enabled: true, wecom: { enabled: true, notify: true, botId: "b", secret: "s" } };
+  const t = planNotifyTargets(cfg, { wechatContexts: {}, qqInbound: null });
+  assert.deepEqual(t.map((x) => x.channel), ["wecom"], "旧版只认 webhook/应用消息 → 方案二永远收不到通知");
+});
+
+test("planNotifyTargets：QQ 只在有合法 openid 时推，数字 id 不推", () => {
+  const cfg = { enabled: true, qq: { enabled: true, notify: true, appId: "1903461428", appSecret: "x" } };
+  const withOpenid = planNotifyTargets(cfg, { wechatContexts: {}, qqInbound: { id: "B237F05151A11D57DAB2743EAC38D040", type: "private" } });
+  assert.deepEqual(withOpenid.map((x) => [x.channel, x.target.id]), [["qq", "B237F05151A11D57DAB2743EAC38D040"]]);
+  const withNumeric = planNotifyTargets(cfg, { wechatContexts: {}, qqInbound: { id: "1903461428", type: "group" } });
+  assert.deepEqual(withNumeric, [], "把 appId/群号当 openid 推 → 400「请求的资源不存在」");
+  const noInbound = planNotifyTargets(cfg, { wechatContexts: {}, qqInbound: null });
+  assert.deepEqual(noInbound, []);
+});
+
+test("planNotifyTargets：微信有目标用户就推（有 token 带上，没有也试一次）", () => {
+  const cfg = { enabled: true, wechat: { enabled: true, notify: true, notifyUserId: "o9cq@im.wechat" } };
+  const noTok = planNotifyTargets(cfg, { wechatContexts: {}, qqInbound: null });
+  assert.deepEqual(noTok.map((x) => [x.channel, x.chatId, x.contextToken]), [["wechat", "o9cq@im.wechat", ""]],
+    "实测 iLink 在会话窗口内允许无 token 主动推送；没有目标用户才跳过");
+  const withTok = planNotifyTargets(cfg, { wechatContexts: { "o9cq@im.wechat": { token: "T" } }, qqInbound: null });
+  assert.deepEqual(withTok.map((x) => [x.channel, x.contextToken]), [["wechat", "T"]]);
+  const noUser = planNotifyTargets({ enabled: true, wechat: { enabled: true, notify: true } }, { wechatContexts: {} });
+  assert.deepEqual(noUser, [], "既没 notifyUserId 也没白名单 → 无目标");
+});
+
+test("QQ msg_id 只在新窗口内使用（过期带着它推 → 400 msg_id无效或越权）", () => {
+  const st = { wechatContexts: {}, qqInbound: null, qqMsgIds: {}, qqMsgIdAt: {} };
+  const now = 1_700_000_000_000;
+  assert.equal(freshQqMsgId(st, "B237", now), "", "没记录 → 不带 msg_id");
+  st.qqMsgIds["B237"] = "MSG1";
+  st.qqMsgIdAt["B237"] = now - 30 * 1000;
+  assert.equal(freshQqMsgId(st, "B237", now), "MSG1", "30 秒前 → 仍可用于被动回复");
+  st.qqMsgIdAt["B237"] = now - (QQ_MSG_ID_MAX_AGE_MS + 1000);
+  assert.equal(freshQqMsgId(st, "B237", now), "", "超过窗口 → 必须不带 msg_id，否则平台拒绝");
+  assert.equal(freshQqMsgId(st, "B237", now, 60 * 1000), "", "可自定义窗口");
+});
+
+test("rememberQqMsgId 记录 msg_id 与其时间戳", () => {
+  const st = { wechatContexts: {}, qqInbound: null, qqMsgIds: {}, qqMsgIdAt: {} };
+  const now = 1_700_000_000_000;
+  rememberQqMsgId("B237", "MSG2", now);
+  assert.equal(freshQqMsgId(globalThis.__nothing || { qqMsgIds: {}, qqMsgIdAt: {} }, "B237", now), "");
+  assert.equal(freshQqMsgId({
+    wechatContexts: {}, qqInbound: null,
+    qqMsgIds: { B237: "MSG2" }, qqMsgIdAt: { B237: now },
+  }, "B237", now + 1000), "MSG2");
+});
+
+test("planNotifyTargets：telegram 走 notifyChatId / 首个 allowedChatIds", () => {
+  assert.deepEqual(
+    planNotifyTargets({ enabled: true, telegram: { enabled: true, notify: true, notifyChatId: "5233181199" } }, {}).map((t) => t.chatId),
+    ["5233181199"]);
+  assert.deepEqual(
+    planNotifyTargets({ enabled: true, telegram: { enabled: true, notify: true, allowedChatIds: ["99"] } }, {}).map((t) => t.chatId),
+    ["99"]);
+});
+
+test("notifySkipReasons：说不清为什么收不到通知时给出原因", () => {
+  const cfg = { enabled: true, qq: { enabled: true, notify: true }, wechat: { enabled: true, notify: true } };
+  const reasons = notifySkipReasons(cfg, { wechatContexts: {}, qqInbound: null });
+  assert.equal(reasons.length, 2, "QQ 无 openid、微信无目标用户 → 两条都给原因");
+  assert.match(reasons.join(" "), /openid/);
+  assert.match(reasons.join(" "), /通知目标用户/);
+  assert.deepEqual(notifySkipReasons({ enabled: true, qq: { enabled: false } }, {}), [], "未启用就不算跳过");
+  const onlyQq = notifySkipReasons({ enabled: true, qq: { enabled: true, notify: true }, wechat: { enabled: true, notify: true, notifyUserId: "u" } },
+    { wechatContexts: {}, qqInbound: null });
+  assert.equal(onlyQq.length, 1, "微信有目标用户后不该再报原因，只剩 QQ 那条");
+  assert.match(onlyQq[0], /^qq:/);
+});
+
+test("healthyView：未启用 / 凭据缺失 / 接收通道未运行 都给出原因", () => {
+  const off = healthyView("telegram", {}, { enabled: false, tokenSet: true, pollerRunning: false });
+  assert.equal(off.ok, false);
+  assert.deepEqual(off.problems, ["渠道未启用"]);
+  const noCred = healthyView("wechat", {}, { enabled: true, tokenSet: false, pollerRunning: false });
+  assert.deepEqual(noCred.problems, ["凭据未配置完整"]);
+  const dead = healthyView("wechat", {}, { enabled: true, tokenSet: true, pollerRunning: false });
+  assert.match(dead.problems.join(" "), /接收通道未在运行/);
+  const idle = healthyView("feishu", {}, { enabled: true, tokenSet: true, pollerRunning: true });
+  assert.equal(idle.ok, true, "空闲（还没收到过入站）不应判为故障");
+  assert.match(idle.notes.join(" "), /尚未收到过入站消息/);
+});
+
+test("healthyView：轮询+入站+出站都正常 → ok，且能读出最近入站/出站", () => {
+  const ch = "telegram";
+  hrec(ch).inbound.count = 0; hrec(ch).poller.fails = 0; hrec(ch).poller.lastError = null;
+  hrec(ch).outbound.lastOk = null; hrec(ch).outbound.lastError = null;
+  markPoll(ch, true);
+  markInbound(ch, "5233181199", "/help");
+  markOutbound(ch, true);
+  const v = healthyView(ch, {}, { enabled: true, tokenSet: true, pollerRunning: true });
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.problems, []);
+  assert.equal(v.inbound.count, 1);
+  assert.equal(v.inbound.lastFrom, "5233181199");
+  assert.equal(v.outbound.lastOk, true);
+  assert.ok(v.poller.polls >= 1);
+});
+
+test("healthyView：出站最近一次失败要显式暴露（不静默）", () => {
+  const ch = "qq";
+  markPoll(ch, true); markInbound(ch, "B237", "hi"); markOutbound(ch, false, "qq v2 send HTTP 400: 请求的资源不存在");
+  const v = healthyView(ch, {}, { enabled: true, tokenSet: true, pollerRunning: true });
+  assert.equal(v.ok, false);
+  assert.match(v.problems.join(" "), /最近出站失败/);
+  assert.match(v.outbound.lastError, /400/);
+});
+
+test("健康计数：markSkip 累计跳过原因、markPoll 失败会清零成功计数", () => {
+  const ch = "wecom";
+  hrec(ch).inbound.skipped = 0;
+  markSkip(ch, "content 非字符串");
+  assert.equal(hrec(ch).inbound.skipped, 1);
+  assert.equal(hrec(ch).inbound.lastSkipReason, "content 非字符串");
+  markPoll(ch, true);
+  const pollsAfterOk = hrec(ch).poller.polls;
+  markPoll(ch, false, "boom");
+  assert.equal(hrec(ch).poller.fails, 1);
+  assert.equal(hrec(ch).poller.lastError, "boom");
+  assert.equal(hrec(ch).poller.polls, pollsAfterOk, "失败不该增加成功轮询数");
+});
+
 test("argsSummary 接受 JSON 字符串与坏 JSON", () => {
   assert.match(argsSummary('{"a":1}'), /a=1/);
   assert.equal(argsSummary("not json"), "not json");

@@ -16,9 +16,43 @@ deepseek-harness (dsh) 面板的**多渠道机器人**插件：把面板命令�
 dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 ```
 
-> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.0.0`
+> 如需锁定版本：`dsh plugin --profile web add github:kevon2019/dsh-channel-bot#v2.1.0`
 > （GitHub 依赖用 `#` 指定 tag/分支，**不是** npm 的 `@版本`）。安装后重启面板：`systemctl restart deepseek-harness.service`
 > 企业微信接入依赖 `@wecom/aibot-node-sdk`（v2.0.0-rc.7 起已在插件依赖内，安装自动带上）。
+
+## 四渠道双向自检（设置 → 多渠道机器人 → 诊断）
+
+渠道的轮询与长连接是**静默进程**：正常时不产生日志，出问题也常常什么都不打印
+（v2.0.0 就踩过「微信长轮询被瞬时配置快照打断后永久退出、日志里一片安静」的坑）。
+v2.1.0 起诊断区有一张自动刷新的表：
+
+| 列 | 含义 |
+|---|---|
+| 接收通道 | 该渠道的轮询（Telegram / 微信 iLink）或长连接（企微智能机器人）**当前是否在跑** |
+| 最近入站 | 最近一次收到用户消息的时间、来源、内容摘要；括号里是被跳过的条数（含原因） |
+| 最近出站 | 最近一次回复/推送是否成功、累计成功次数或错误原文、时间 |
+| 结论 | `✅ 正常` 或 `⚠ 原因`（未启用 / 凭据不全 / 接收通道未运行 / 最近轮询报错 / 最近出站失败） |
+
+同一份数据也在 `GET /api/channel-bot/status` 的 `health` 与 `state` 字段里
+（`state.notifyTargets` 是当前能推送的渠道，`state.notifySkipped` 是「为什么某渠道收不到通知」）。
+
+```bash
+curl -s -H "Cookie: <面板 cookie>" http://127.0.0.1:3080/api/channel-bot/status | python3 -m json.tool
+```
+
+### 已知平台限制（不是插件 bug）
+
+- **微信（个人号 iLink）的推送受「会话窗口」限制**：机器人在窗口内可被动回复（必须原样带回该条消息的
+  `context_token`），也可以主动推送（实测 `{"ok":true}`）；窗口过期后推送返回 **`ret -2`**。所以：
+
+  1. 收到 `ret -2` 时，**先在该会话给机器人发一条消息**即可恢复（插件会把 context_token 落盘，重启不丢）；
+  2. 遇到 `ret -2` 时健康表会直接写明原因与修复动作，不用翻日志；
+  3. 微信**自己给自己发**（同一账号既是机器人又是用户）不会产生入站事件 —— 请用**另一个微信号**给机器人发消息。
+
+- **QQ 开放平台 v2 的群/单聊 id 是 `openid`（16–64 位非纯数字），不是群号/QQ 号**。
+  用数字群号当目标必然 `400 请求的资源不存在(用户/群已注销)`；v2 的通知只能推到「最近给机器人
+  发过消息的那个 openid」。
+- **企业微信方案二（智能机器人长连接）**：同一个 bot 只能一个客户端在线（本插件与 OpenClaw 二选一）。
 
 ## 兼容性
 
@@ -111,5 +145,5 @@ IM 里发 `/version` 也会回显 `DeepSeek Harness <核心版本>（多渠道�
 ## 开发与源码
 
 - 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
-- 版本：`2.0.0`
+- 版本：`2.1.0`
 - 许可：MIT
