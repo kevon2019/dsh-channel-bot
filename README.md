@@ -20,11 +20,43 @@ dsh plugin --profile web add github:kevon2019/dsh-channel-bot
 > （GitHub 依赖用 `#` 指定 tag/分支，**不是** npm 的 `@版本`）。安装后重启面板：`systemctl restart deepseek-harness.service`
 > 企业微信接入依赖 `@wecom/aibot-node-sdk`（v2.0.0-rc.7 起已在插件依赖内，安装自动带上）。
 
-## 全渠道双向自检（设置 → 多渠道机器人 → 诊断）
+## 全渠道双向自检 + 分渠道修复（设置 → 多渠道机器人 → 诊断）
 
 覆盖**六个渠道**：Telegram / 钉钉 / 飞书 / 企业微信 / QQ / 微信。每个渠道一行，另有
 「参与自检」开关（分渠道设定，可把某渠道移出表）与每行独立的「自检」按钮；
 顶部「全部自检」会依次给所有已启用且参与的渠道发一条测试消息。
+
+**每行还有一个「修复」按钮（v2.3.0）**，顶部有「一键修复全部」。修复不是「重发一条测试消息」，
+而是把诊断结论里**能自动做掉的事**一次做掉：
+
+1. **重启该渠道的接收通道**：Telegram `getUpdates` 轮询 / 微信 iLink 长轮询 / 企业微信长连接
+   （钉钉、飞书、QQ 是平台回调，没有常驻接收进程，会如实说明）；重启时会先中止「已经在飞」的那次长轮询
+   （AbortController / 轮询代计数），避免同一个 token 上两个长轮询并发打出的 `409 Conflict`；
+2. **清除该渠道的访问令牌缓存**：钉钉 `accessToken` / 飞书 `tenant_access_token` / QQ `access_token`
+   —— token 失效或被顶掉是「最近出站失败」最常见的根因；
+3. **清空历史错误账**：连续失败计数与「最近入站/出站错误」，修好后自检表不再挂着早已恢复的旧错；
+4. **真打一次平台接口校验凭据**：Telegram `getMe`（会回显 bot 用户名）、钉钉/飞书/QQ 换取 access token、
+   企业微信长连接状态、微信 botToken 配置；
+5. **复核并给结论**：每个渠道返回「做了什么 / 还需要人工做什么 / 修复后结论」，逐个渠道就地显示在表里，
+   一键修复还会给一行汇总（`✅ 修复并通过 N 个；⚠ 仍需人工 M 个；共执行 K 项动作`）。
+
+**它不会假装修好**：「渠道未启用」「凭据没填」这类只能人来做的，会明确写成待人工事项
+（例如「钉钉方案二：需要 AppKey + AppSecret + robotCode」），并且最终结论仍是 ⚠。
+
+接口（面板与脚本都可用）：
+
+```bash
+# 单个渠道修复
+curl -s -X POST -H "Cookie: <面板 cookie>" -H 'content-type: application/json' \
+  -d '{"channel":"telegram"}' http://127.0.0.1:3080/api/channel-bot/repair
+# 一键修复全部已启用渠道（channel 省略 / "all" / "*" 等价）
+curl -s -X POST -H "Cookie: <面板 cookie>" -H 'content-type: application/json' \
+  -d '{"channel":"all"}' http://127.0.0.1:3080/api/channel-bot/repair
+```
+
+返回结构：`{ok, scope, summary{total,repaired,healthy,failed,skipped,actions}, results[{channel,label,ok,skipped,
+probe{ok,message},actions[],manual[],notes[],before,after}], health, channelsMeta}`。
+不支持的方法返回 `405`，未知渠道返回 `400`。
 
 ### 钉钉 / 飞书：方案一 vs 方案二
 
@@ -168,5 +200,9 @@ IM 里发 `/version` 也会回显 `DeepSeek Harness <核心版本>（多渠道�
 ## 开发与源码
 
 - 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
-- 版本：`2.1.0`
+- 单测（不需要浏览器 / dsh 运行时；会落盘的模块用 `CHANNEL_BOT_STATE_FILE` 指到临时文件）：
+  ```bash
+  node --test scripts/unit.test.mjs scripts/client.test.mjs   # 66 项：渲染/审批/会话/分发 + 修复文案
+  ```
+- 版本：`2.3.0`
 - 许可：MIT

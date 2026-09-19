@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.3.0 (2026-09-19) — 按渠道「修复」+「一键修复全部渠道故障和报错」
+
+- **诊断表新增修复能力**（设置 → 多渠道机器人 → 诊断）：
+  - 每行在「自检」旁新增 **「修复」** 按钮（`data-repair`），顶部新增 **「一键修复全部」**
+    （`data-repair-all`，按钮上直接显示「N 个有故障 / 共 M 个已启用」，有故障时高亮）；
+  - 修复结果就地显示在对应渠道行（悬浮可见完整明细），一键修复额外给一行汇总
+    `✅ 修复并通过 N 个；⚠ 仍需人工 M 个；⏭ 跳过 K 个；共执行 J 项动作`。
+- **修复做什么（按渠道）**：
+  1. 重启接收通道 —— Telegram 轮询 / 微信 iLink 长轮询 / 企业微信长连接；钉钉、飞书、QQ 为平台回调，
+     如实返回「无常驻接收进程可重启」的说明；
+  2. 清除该渠道的访问令牌缓存（钉钉 `accessToken` / 飞书 `tenant_access_token` / QQ `access_token`）；
+  3. 清空健康账历史错误（连续失败计数、最近入站/出站错误）；
+  4. 真打一次平台接口校验凭据（Telegram `getMe`、钉钉/飞书/QQ 换 token、企微长连接状态、微信 token 配置）；
+  5. 复核并返回「做了什么 / 仍需人工 / 修复后结论」。
+- **修的是根因，不是话术**：
+  - **强制重启不再打出 409**：Telegram 轮询新增 `AbortController`，重启前主动中止在飞的 `getUpdates`；
+    被取代的旧请求不再计入错误账（`if (!alive)` 分支）。微信长轮询新增「代（generation）」计数 +
+    同样中止在飞请求 —— 既解决「循环卡死但 `wechatPolling` 恒为 true、修复无从下手」，也避免两个长轮询并发。
+    实测：修复 telegram 后 `poller.fails=0、lastError=null`（旧实现会立刻记一次 `HTTP 409`）。
+  - **凭据缺失如实回显**：钉钉/飞书缺 AppKey/AppSecret 时返回可操作提示，结论保持 ⚠，不假装修好。
+- **服务端 API（仅新增）**：`POST /api/channel-bot/repair {channel}` / `{channel:"all"|"*"|省略}`；
+  返回 `{ok, scope, summary{total,repaired,healthy,failed,skipped,actions}, results[...], health, channelsMeta}`；
+  `GET` 返回 405、未知渠道返回 400。`/status` 的 health 计算抽成 `channelRuntimeInfo()` 与服务端修复共用同一口径。
+- **实测证据（2026-09-19，dsh 0.1.6-alpha.1 / 面板 3080 + 真实 Chromium 点击）**：
+  - `POST /repair {channel:"telegram"}` → `probe: Telegram 凭据有效（@hermes_2026_kevonbot）`，
+    3 项动作，`after.poller.fails=0`、`lastError=null`（**修复前实测过一次 `HTTP 409`，加 AbortController 后消失**）；
+  - `POST /repair {channel:"all"}` → `summary: {total:6, repaired:6, healthy:4, failed:2, actions:12}`：
+    telegram / 企业微信 / QQ / 微信 修复并复核通过；钉钉、飞书如实报「需要 AppKey+AppSecret+robotCode」、
+    「需要 App ID + App Secret」（已核对 `settings.yaml`：两者确实未配置方案二凭据）；
+  - CDP 真实鼠标点击：6 行「修复」按钮 + 「一键修复全部」全部可点，telegram 行就地显示
+    `✅ 修复完成（复核通过）：✔ Telegram 凭据有效（@hermes_2026_kevonbot）`，汇总行显示
+    `✅ 修复并通过 4 个；⚠ 仍需人工 2 个；共执行 12 项动作`，控制台 0 报错；
+  - 单测：`node --test scripts/unit.test.mjs scripts/client.test.mjs` = 66 项全绿
+    （新增 `scripts/client.test.mjs` 8 项：修复结果文案的成功/部分/跳过/无返回四态 + 一键汇总）。
+- 兼容性不变：dsh `0.1.6-alpha.1` 实测。
+
 ## 2.2.0 (2026-09-18) — 全渠道双向自检 + 钉钉/飞书「方案二」
 
 - **双向自检扩展到全部 6 个渠道**：Telegram / **钉钉** / **飞书** / 企业微信 / QQ / 微信，
