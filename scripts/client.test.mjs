@@ -29,6 +29,7 @@ if (typeof globalThis.document === "undefined") {
 new Function("window", code)(fakeWindow);
 
 const R = mod && mod.apply && mod.apply.__repair;
+const D = mod && mod.apply && mod.apply.__diag;
 
 test("client 半可加载且导出修复纯函数", () => {
   assert.ok(mod && typeof mod.apply === "function");
@@ -94,4 +95,18 @@ test("repairAllSummary：服务端整体报错 → 带上 error 文案", () => {
 test("repairAllSummary：无返回兜底", () => {
   assert.match(R.repairAllSummary(null), /无返回/);
   assert.match(R.repairAllSummary({}), /无返回/);
+});
+
+/* ---------- v2.3.0：诊断表自动刷新间隔固定 6 小时（禁止退回秒级） ---------- */
+test("诊断刷新间隔 = 6 小时（21600000ms）", () => {
+  assert.equal(typeof D, "object");
+  assert.equal(D.REFRESH_MS, 6 * 60 * 60 * 1000);
+  assert.equal(D.REFRESH_MS, 21600000);
+});
+
+test("诊断刷新文案说明 6 小时 + 打开即刷新，且不再出现「秒」级刷新", () => {
+  assert.match(D.refreshText(""), /每 6 小时自动刷新/);
+  assert.match(D.refreshText(""), /打开诊断页会立即刷新一次/);
+  assert.doesNotMatch(D.refreshText(""), /每 \d+ 秒自动刷新/);
+  assert.match(D.refreshText("12:00:00"), /最近 12:00:00/);
 });

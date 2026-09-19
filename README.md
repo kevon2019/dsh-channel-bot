@@ -79,7 +79,8 @@ curl -s -X POST -H "Cookie: <面板 cookie>" -H 'content-type: application/json'
 
 渠道的轮询与长连接是**静默进程**：正常时不产生日志，出问题也常常什么都不打印
 （v2.0.0 就踩过「微信长轮询被瞬时配置快照打断后永久退出、日志里一片安静」的坑）。
-v2.1.0 起诊断区有一张自动刷新的表：
+v2.1.0 起诊断区有一张自动刷新的表（**v2.3.0 起自动刷新间隔为 6 小时**：打开诊断页会立即刷新一次，
+也可随时点「刷新自检」手动刷新 —— 渠道状态变化很慢，秒级轮询没有意义）：
 
 | 列 | 含义 |
 |---|---|
@@ -202,7 +203,7 @@ IM 里发 `/version` 也会回显 `DeepSeek Harness <核心版本>（多渠道�
 - 结构：`lib/index.js`（host 半，服务端）+ `lib/client.js`（client 半，浏览器端）+ `cordis.patch.yml`（bundle 挂载）
 - 单测（不需要浏览器 / dsh 运行时；会落盘的模块用 `CHANNEL_BOT_STATE_FILE` 指到临时文件）：
   ```bash
-  node --test scripts/unit.test.mjs scripts/client.test.mjs   # 66 项：渲染/审批/会话/分发 + 修复文案
+  node --test scripts/unit.test.mjs scripts/client.test.mjs   # 68 项：渲染/审批/会话/分发 + 修复文案 + 6 小时刷新间隔
   ```
 - 版本：`2.3.0`
 - 许可：MIT
